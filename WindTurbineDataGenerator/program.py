@@ -1,13 +1,15 @@
-#----------------------------------------------------
+#------------------------------------------------------
 # Based on Python 3.6.8 64bit
-#----------------------------------------------------
+#------------------------------------------------------
 # Done:
 # 1. sync send event data
 # 2. async send event data
 #------------------------------------------------------
 # TODO:
-# 1. in c# version there is a cancellationtoken
-# 2. optimization, error handling, argument validation
+# 1. optimization, error handling, argument validation
+#------------------------------------------------------
+# Note:
+# 1. use threading.Event as a signal
 #------------------------------------------------------
 
 import datetime
@@ -16,19 +18,17 @@ import json
 import random
 import logging
 import asyncio
-from threading import Thread
+from threading import Thread, Event
 from concurrent.futures import ThreadPoolExecutor
 
-from azure.eventhub import EventHubClient, Sender, EventData
+from azure.eventhub import EventHubClient, Sender, EventData, EventHubClientAsync, AsyncSender
 
 from windturbine_measure import WindTurbineMeasure
 
 #-------------------- START OF GLOBAL VARIABLES --------------------*
-
 EVENTHUB_CONNECTION_STRING = "[provide the EH connection string]"
 EVENTHUB_NAME = "[provide the EH name]"
 
-# set true to use async method, false to use sync method
 use_async = True
 
 # logger setting
@@ -42,11 +42,6 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 fh.setFormatter(formatter)
 
 logger.addHandler(fh)
-
-# execution thread pool
-# one thread for listening to the user input, which is IO-block. Another for continuously sending data
-thread_pool = ThreadPoolExecutor(2)
-
 #-------------------- END OF GLOBAL VARIABLES --------------------*
 
 def generate_turbine_measure(turbine_id : str, scale_factor : int):
@@ -63,23 +58,7 @@ def serialize_windturbine_to_eventdata(windturbine_measure):
     message_string = json.dumps(windturbine_measure.to_dict(), ensure_ascii=True)
     message_bytes = message_string.encode(encoding="ascii")
 
-    return EventData(message_bytes)
-
-# the real sending part
-def batch_send(ev_datas, sender):
-    try:
-        for ev_data in ev_datas:
-            sender.send(ev_data)
-
-        print(".", end='', flush=True)
-
-    except Exception as e:
-        logger.error(e)
-    return
-
-# async wrapper for the batch_send function
-async def batch_send_async(loop, ev_datas, sender):
-    await loop.run_in_executor(thread_pool, batch_send, ev_datas, sender)
+    return message_bytes
 
 # input() is io-blocked
 def user_input():
@@ -87,27 +66,25 @@ def user_input():
     return val
 
 # async wrapper for the input
-async def user_input_async(loop):
+async def user_input_async(loop, thread_pool):
     await loop.run_in_executor(thread_pool, user_input)
 
-async def user_input_monitor():
-    loop = asyncio.get_event_loop()
-    await user_input_async(loop)
-    global cancel_requested
-    cancel_requested = True
-    return
+async def user_input_monitor(loop, cancellation_token):
+    with ThreadPoolExecutor(1) as thread_pool:
+        await user_input_async(loop, thread_pool)
+        cancellation_token.clear()
+        return
 
-async def start_event_generation_async_impl():
+async def start_event_generation_async_impl(cancellation_token): 
 
-    loop = asyncio.get_event_loop()
-    
     random.seed(int(time.time())) # use ticks as seed
     
-    client = EventHubClient.from_connection_string(conn_str=EVENTHUB_CONNECTION_STRING, eventhub=EVENTHUB_NAME)
-    sender = client.add_sender()
+    client = EventHubClientAsync.from_connection_string(conn_str=EVENTHUB_CONNECTION_STRING, eventhub=EVENTHUB_NAME)
+    sender = client.add_async_sender()
+
     client.run()
     
-    while not cancel_requested:
+    while cancellation_token.is_set():
         # Simulate sending data from 100 weather sensors
         devices_data = []
         
@@ -116,27 +93,29 @@ async def start_event_generation_async_impl():
             windturbine_measure = generate_turbine_measure("Python_Turbine_" + str(i), scale_factor)
             ev_data = serialize_windturbine_to_eventdata(windturbine_measure)
             devices_data.append(ev_data)
-            
-        send_res = await batch_send_async(loop, devices_data, sender)
-        logger.info(send_res)
+        
+        await sender.send(EventData(batch=[event for event in devices_data]))
+        print(".", end='', flush=True)
+        logger.info("100 events sent!")
 
     client.stop()
+    return
 
 def start_event_generation_async():
-
-    global cancel_requested
-    cancel_requested = False
+    cancellation_token = Event()
+    cancellation_token.set()
     
     loop = asyncio.get_event_loop()
     tasks = [
-        loop.create_task(user_input_monitor()),
-        loop.create_task(start_event_generation_async_impl())
+        loop.create_task(user_input_monitor(loop, cancellation_token)),
+        loop.create_task(start_event_generation_async_impl(cancellation_token))
     ]
-    
-    loop.run_until_complete(asyncio.wait(tasks))
-    thread_pool.shutdown()
 
-def start_event_generation_sync_impl():
+    #loop.run_until_complete(asyncio.wait(tasks))
+    loop.run_until_complete(asyncio.gather(*tasks))
+    loop.close()
+
+def start_event_generation_sync_impl(cancellation_token):
 
     random.seed(int(time.time())) # use ticks as seed
     
@@ -144,19 +123,19 @@ def start_event_generation_sync_impl():
     sender = client.add_sender()
     client.run()
 
-    while not cancel_requested:
+    while cancellation_token.is_set():
         try:
             # Simulate sending data from 100 weather sensors
-            #devices_data = []
+            devices_data = []
         
             for i in range(0, 100):
                 scale_factor = random.randrange(0,25)
                 windturbine_measure = generate_turbine_measure("Python_Turbine_" + str(i), scale_factor)
                 ev_data = serialize_windturbine_to_eventdata(windturbine_measure)
-                send_res = sender.send(ev_data) # this is a block func
-                logger.info(windturbine_measure.device_id + ' ' + str(send_res))
-                #devices_data.append(ev_data)
-            
+                devices_data.append(ev_data)
+
+            sender.send(EventData(batch=[event for event in devices_data])) 
+            logger.info("100 events sent!")
             print(".", end='', flush=True)
 
         except Exception as e:
@@ -166,15 +145,13 @@ def start_event_generation_sync_impl():
 
 def start_event_generation_sync():
 
-    global cancel_requested
-    cancel_requested = False
-
-    worker = Thread(target=start_event_generation_sync_impl)
+    cancellation_token = Event()
+    cancellation_token.set()
+    worker = Thread(target=start_event_generation_sync_impl, args=(cancellation_token,))
     worker.start()
 
     input()
-    cancel_requested = True
-
+    cancellation_token.clear()
     worker.join()
 
 if __name__ == "__main__":
