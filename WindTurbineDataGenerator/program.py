@@ -23,7 +23,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from azure.eventhub import EventHubClient, Sender, EventData, EventHubClientAsync, AsyncSender
 
-from .windturbine_measure import WindTurbineMeasure
+import sys
+sys.path.append('..')
+from windturbine_measure import WindTurbineMeasure
 
 #-------------------- START OF GLOBAL VARIABLES --------------------*
 EVENTHUB_CONNECTION_STRING = "[provide the EH connection string]"

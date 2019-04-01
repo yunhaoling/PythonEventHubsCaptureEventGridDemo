@@ -14,6 +14,7 @@ The original c# version project address is https://github.com/Azure/azure-event-
 1. Follow the steps in https://github.com/Azure/azure-event-hubs/tree/master/samples/e2e/EventHubsCaptureEventGridDemo to deploy the infrastructure **except for the Functions App**.
 2. Create a Function App on Azure. Choose Linux as the OS and Python as the Runtime Stack.
 3. Follow the steps in https://docs.microsoft.com/en-us/azure/azure-functions/functions-create-first-function-python and https://docs.microsoft.com/en-us/azure/azure-functions/functions-reference-python to to publish the local **EventGridTriggerMigrateData** function to the Function App created on Azure.
+    - If you have an existing resource group named myResourceGroup with any non-Linux App Service apps, you must use a different resource group. You can't host both Windows and Linux apps in the same resource group.
 4. Configure the Application Settings of the Functions App. Set **StorageConnectionString** and **PythonSqlDwConnection**.
 5. Add Event Grid subscription to the Functions App which is described in https://github.com/Azure/azure-event-hubs/tree/master/samples/e2e/EventHubsCaptureEventGridDemo.
 6. Using your own **EVENTHUB_CONNECTION_STRING** and **EVENTHUB_NAME** in program.py.
